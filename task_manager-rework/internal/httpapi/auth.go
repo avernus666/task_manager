@@ -41,6 +41,10 @@ func registerAuthRoutes(r *gin.Engine, db *pgxpool.Pool, cfg config.Config) {
 		}
 		input.Username = strings.TrimSpace(input.Username)
 		input.Email = strings.ToLower(strings.TrimSpace(input.Email))
+		if input.Username == "" {
+			abortJSON(c, http.StatusBadRequest, "username is required")
+			return
+		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
 		if err != nil {
 			abortJSON(c, http.StatusInternalServerError, "could not hash password")

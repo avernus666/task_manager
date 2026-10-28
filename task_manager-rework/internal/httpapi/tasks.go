@@ -42,6 +42,14 @@ func registerTaskRoutes(r *gin.Engine, db *pgxpool.Pool, cfg config.Config) {
 			abortJSON(c, http.StatusBadRequest, "invalid task data")
 			return
 		}
+		in.Title = strings.TrimSpace(in.Title)
+		if in.Title == "" {
+			abortJSON(c, http.StatusBadRequest, "title is required")
+			return
+		}
+		if !validAssignee(c, db, in.AssigneeID) {
+			return
+		}
 		if in.Status == "" {
 			in.Status = "new"
 		}
@@ -52,7 +60,8 @@ func registerTaskRoutes(r *gin.Engine, db *pgxpool.Pool, cfg config.Config) {
 			abortJSON(c, http.StatusBadRequest, "invalid status or priority")
 			return
 		}
-		if _, ok := getProject(c, db, intString(in.ProjectID)); !ok {
+		project, ok := getProject(c, db, intString(in.ProjectID))
+		if !ok {
 			return
 		}
 		claims := currentClaims(c)
@@ -67,6 +76,7 @@ func registerTaskRoutes(r *gin.Engine, db *pgxpool.Pool, cfg config.Config) {
 			abortJSON(c, http.StatusInternalServerError, "could not create task")
 			return
 		}
+		sendPreferenceEmail(db, project.OwnerID, "task", "Task Manager — новая задача", "В проекте «"+project.Name+"» создана задача: "+t.Title)
 		c.JSON(http.StatusCreated, t)
 	})
 	g.GET("/", func(c *gin.Context) {
@@ -128,7 +138,19 @@ func registerTaskRoutes(r *gin.Engine, db *pgxpool.Pool, cfg config.Config) {
 			abortJSON(c, http.StatusBadRequest, "invalid task data")
 			return
 		}
+		in.Title = strings.TrimSpace(in.Title)
+		if in.Title == "" {
+			abortJSON(c, http.StatusBadRequest, "title is required")
+			return
+		}
+		if !validAssignee(c, db, in.AssigneeID) {
+			return
+		}
 		if _, ok := getProject(c, db, intString(in.ProjectID)); !ok {
+			return
+		}
+		previous, exists := getTask(c, db, c.Param("id"))
+		if !exists {
 			return
 		}
 		claims := currentClaims(c)
@@ -142,6 +164,9 @@ func registerTaskRoutes(r *gin.Engine, db *pgxpool.Pool, cfg config.Config) {
 		if err != nil {
 			abortJSON(c, http.StatusNotFound, "task not found or access denied")
 			return
+		}
+		if previous.Status != t.Status {
+			sendPreferenceEmail(db, previous.CreatorID, "task", "Task Manager — изменён статус задачи", "Статус задачи «"+t.Title+"» изменён на: "+t.Status)
 		}
 		c.JSON(http.StatusOK, t)
 	})
@@ -195,4 +220,17 @@ func nullableInt(v string) any {
 func intString(v int64) string {
 	// IDs are positive integers; this avoids adding another formatting dependency.
 	return strconv.FormatInt(v, 10)
+}
+
+func validAssignee(c *gin.Context, db *pgxpool.Pool, assigneeID *int64) bool {
+	if assigneeID == nil {
+		return true
+	}
+	var active bool
+	err := db.QueryRow(c.Request.Context(), `SELECT is_active FROM users WHERE id=$1`, *assigneeID).Scan(&active)
+	if err != nil || !active {
+		abortJSON(c, http.StatusBadRequest, "assignee must be an active user")
+		return false
+	}
+	return true
 }

@@ -88,6 +88,11 @@ func registerProjectRoutes(r *gin.Engine, db *pgxpool.Pool, cfg config.Config) {
 			abortJSON(c, http.StatusBadRequest, "name is required")
 			return
 		}
+		input.Name = strings.TrimSpace(input.Name)
+		if input.Name == "" {
+			abortJSON(c, http.StatusBadRequest, "name is required")
+			return
+		}
 		claims := currentClaims(c)
 		var p projectDTO
 		err := db.QueryRow(c.Request.Context(), `

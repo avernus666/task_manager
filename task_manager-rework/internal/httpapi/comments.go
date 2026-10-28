@@ -30,7 +30,8 @@ func registerCommentRoutes(r *gin.Engine, db *pgxpool.Pool, cfg config.Config) {
 			abortJSON(c, http.StatusBadRequest, "text and task_id are required")
 			return
 		}
-		if _, ok := getTask(c, db, intString(in.TaskID)); !ok {
+		task, ok := getTask(c, db, intString(in.TaskID))
+		if !ok {
 			return
 		}
 		var out commentDTO
@@ -42,6 +43,9 @@ func registerCommentRoutes(r *gin.Engine, db *pgxpool.Pool, cfg config.Config) {
 		if err != nil {
 			abortJSON(c, http.StatusInternalServerError, "could not create comment")
 			return
+		}
+		if task.CreatorID != currentClaims(c).UserID {
+			sendPreferenceEmail(db, task.CreatorID, "comment", "Task Manager — новый комментарий", "К задаче «"+task.Title+"» добавлен комментарий: "+out.Text)
 		}
 		c.JSON(http.StatusCreated, out)
 	})

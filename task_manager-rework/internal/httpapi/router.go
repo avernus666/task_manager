@@ -4,7 +4,9 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -16,7 +18,8 @@ import (
 
 func NewRouter(db *pgxpool.Pool, cfg config.Config, logger *zap.Logger) *gin.Engine {
 	router := gin.New()
-	router.Use(gin.Recovery(), corsMiddleware(), requestLogger(logger))
+	_ = router.SetTrustedProxies(nil)
+	router.Use(gin.Recovery(), securityHeaders(), requestSizeLimit(1<<20), rateLimit(120, time.Minute), corsMiddleware(), requestLogger(logger))
 
 	router.GET("/", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "Task Manager API", "docs": "API endpoints are listed in README.md"})
@@ -38,6 +41,7 @@ func NewRouter(db *pgxpool.Pool, cfg config.Config, logger *zap.Logger) *gin.Eng
 	registerProjectRoutes(router, db, cfg)
 	registerTaskRoutes(router, db, cfg)
 	registerCommentRoutes(router, db, cfg)
+	registerNotificationRoutes(router, db, cfg)
 	return router
 }
 
@@ -77,6 +81,62 @@ func corsMiddleware() gin.HandlerFunc {
 		}
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+		c.Next()
+	}
+}
+
+func securityHeaders() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
+		c.Header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		c.Header("Cross-Origin-Resource-Policy", "same-site")
+		c.Next()
+	}
+}
+
+func requestSizeLimit(maxBytes int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Body != nil {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
+		}
+		c.Next()
+	}
+}
+
+type rateWindow struct {
+	start time.Time
+	count int
+}
+
+func rateLimit(maxRequests int, window time.Duration) gin.HandlerFunc {
+	var mu sync.Mutex
+	clients := make(map[string]rateWindow)
+	return func(c *gin.Context) {
+		now := time.Now()
+		ip := c.ClientIP()
+		mu.Lock()
+		entry := clients[ip]
+		if entry.start.IsZero() || now.Sub(entry.start) >= window {
+			entry = rateWindow{start: now}
+		}
+		entry.count++
+		clients[ip] = entry
+		if len(clients) > 10000 {
+			for key, value := range clients {
+				if now.Sub(value.start) >= window {
+					delete(clients, key)
+				}
+			}
+		}
+		allowed := entry.count <= maxRequests
+		mu.Unlock()
+		if !allowed {
+			c.Header("Retry-After", strconv.Itoa(max(1, int(window.Seconds()))))
+			abortJSON(c, http.StatusTooManyRequests, "rate limit exceeded; retry shortly")
 			return
 		}
 		c.Next()

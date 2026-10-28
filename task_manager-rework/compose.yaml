@@ -15,19 +15,6 @@ services:
       timeout: 3s
       retries: 10
 
-  migrate:
-    image: migrate/migrate:v4.18.2
-    depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - ./db/migrations:/migrations:ro
-    command:
-      - "-path=/migrations"
-      - "-database=postgres://task_manager:${POSTGRES_PASSWORD:-change_this_password}@postgres:5432/task_manager?sslmode=disable"
-      - "up"
-    restart: on-failure
-
   api:
     build: .
     environment:
@@ -36,17 +23,19 @@ services:
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env before starting}
       JWT_TTL: ${JWT_TTL:-30m}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173}
+      AUTO_MIGRATE: ${AUTO_MIGRATE:-true}
     depends_on:
-      migrate:
-        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
     ports:
       - "8080:8080"
     restart: unless-stopped
 
   frontend:
-    build: ./frontend
-    environment:
-      VITE_API_URL: ${VITE_API_URL:-http://localhost:8080}
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8080}
     depends_on:
       - api
     ports:
